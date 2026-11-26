@@ -1,0 +1,6 @@
+project_name: TaroBot
+template: default
+server_mode: polling
+database: sqlalchemy
+use_migrations: true
+extras: []
