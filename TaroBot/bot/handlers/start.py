@@ -17,13 +17,6 @@ from gigachat.models import Chat, Messages, MessagesRole
 load_dotenv()
 router = Router()
 
-# ==================== ПУТИ К ФАЙЛАМ (ДЛЯ СЕРВЕРА) ====================
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Поднимаемся на 2 уровня вверх из bot/handlers/ в корень проекта
-CARDS_PATH = os.path.join(CURRENT_DIR, "..", "..", "cards.json")
-IMAGES_DIR = os.path.join(CURRENT_DIR, "..", "..", "SimpleTarotPng")
-# ====================================================================
-
 # ==================== ЗАГЛУШКИ ДЛЯ ЮKASSA ====================
 SELLER_NAME = os.getenv("SELLER_NAME", "[ВАШЕ_ИМЯ]")
 SELLER_INN = os.getenv("SELLER_INN", "[ВАШ_ИНН]")
@@ -95,8 +88,8 @@ TAROT_NAMES_RU = {
 }
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ---
-# Для сервера базу лучше хранить в папке с данными, чтобы она не стиралась при перезапуске
-DATA_DIR = os.getenv("DATA_DIR", CURRENT_DIR)
+# (Оставил проверку на DATA_DIR для сохранности базы на хостинге, как было в прошлой версии)
+DATA_DIR = os.getenv("DATA_DIR", ".")
 DB_PATH = os.path.join(DATA_DIR, "users.db")
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = db.cursor()
@@ -271,17 +264,17 @@ async def process_tarot_ai(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🔮 Тасую колоду и общаюсь с духами...")
 
-    # Читаем файл с картами по правильному пути
+    # === ВОЗВРАЩЕН СТАРЫЙ ПУТЬ К ФАЙЛУ ===
     try:
-        with open(CARDS_PATH, "r", encoding="utf-8") as f:
+        with open("cards.json", "r", encoding="utf-8") as f:
             tarot_data = json.load(f)
     except FileNotFoundError:
-        await message.answer("Ошибка: файл cards.json не найден на сервере.")
-        logging.error(f"Файл не найден по пути: {CARDS_PATH}")
+        await message.answer("Ошибка: файл cards.json не найден.")
         return
     except Exception as e:
         await message.answer(f"Ошибка чтения файла: {e}")
         return
+    # ======================================
 
     selected_cards = random.sample(tarot_data, 3)
 
@@ -404,8 +397,8 @@ async def process_tarot_ai(message: Message, state: FSMContext):
             caption = caption[:1020] + "..."
 
         if image_name:
-            # Используем правильный путь к картинкам
-            image_path = os.path.join(IMAGES_DIR, image_name)
+            # === ВОЗВРАЩЕН СТАРЫЙ ПУТЬ К КАРТИНКАМ ===
+            image_path = f"SimpleTarotPng/{image_name}"
             try:
                 photo = FSInputFile(image_path)
                 await message.answer_photo(photo=photo, caption=caption)
