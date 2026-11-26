@@ -17,11 +17,20 @@ from gigachat.models import Chat, Messages, MessagesRole
 load_dotenv()
 router = Router()
 
+# ==================== ПУТИ К ФАЙЛАМ (ДЛЯ СЕРВЕРА) ====================
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Поднимаемся на 2 уровня вверх из bot/handlers/ в корень проекта
+CARDS_PATH = os.path.join(CURRENT_DIR, "..", "..", "cards.json")
+IMAGES_DIR = os.path.join(CURRENT_DIR, "..", "..", "SimpleTarotPng")
+# ====================================================================
+
 # ==================== ЗАГЛУШКИ ДЛЯ ЮKASSA ====================
 SELLER_NAME = os.getenv("SELLER_NAME", "[ВАШЕ_ИМЯ]")
 SELLER_INN = os.getenv("SELLER_INN", "[ВАШ_ИНН]")
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "@[ВАШ_КОНТАКТ]")
 PRICE_RUB = 50
+
+
 # =============================================================
 
 
@@ -86,7 +95,10 @@ TAROT_NAMES_RU = {
 }
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ---
-db = sqlite3.connect("users.db")
+# Для сервера базу лучше хранить в папке с данными, чтобы она не стиралась при перезапуске
+DATA_DIR = os.getenv("DATA_DIR", CURRENT_DIR)
+DB_PATH = os.path.join(DATA_DIR, "users.db")
+db = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = db.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -133,13 +145,8 @@ def is_valid_question(text: str) -> tuple[bool, str]:
 
 # --- ФУНКЦИЯ ВОЗВРАТА СРЕДСТВ (ЮKassa) ---
 async def process_refund(message: Message, payment_id: str | None, reason_text: str):
-    """
-    Для ЮKassa возврат делается через API (POST /v3/refunds).
-    Здесь оставлена заглушка — при необходимости добавим вызов API.
-    """
     if payment_id:
         logging.info(f"Запрошен возврат по платежу {payment_id}: {reason_text}")
-        # TODO: при подключении ЮKassa API — реализовать возврат через API
         await message.answer(
             f"{reason_text}\n\nСредства будут возвращены на вашу карту в течение 1-3 рабочих дней."
         )
@@ -223,8 +230,6 @@ async def send_invoice(callback: CallbackQuery, state: FSMContext):
         return
 
     # ==================== ОПЛАТА ЧЕРЕЗ ЮKASSA ====================
-    # Пока заглушка — после подключения ЮKassa заменим на реальный вызов API.
-    # Сейчас, чтобы не ломать бота, показываем сообщение.
     await callback.message.answer(
         "💳 Оплата через ЮKassa временно настраивается.\n"
         f"Пожалуйста, свяжитесь с поддержкой: {SUPPORT_CONTACT}"
@@ -234,7 +239,7 @@ async def send_invoice(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# --- ОБРАБОТЧИК УСПЕШНОЙ ОПЛАТЫ (пока оставлен для совместимости) ---
+# --- ОБРАБОТЧИК УСПЕШНОЙ ОПЛАТЫ ---
 @router.message(F.successful_payment)
 async def on_successful_payment(message: Message, state: FSMContext):
     payment = message.successful_payment
@@ -266,11 +271,13 @@ async def process_tarot_ai(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🔮 Тасую колоду и общаюсь с духами...")
 
+    # Читаем файл с картами по правильному пути
     try:
-        with open("cards.json", "r", encoding="utf-8") as f:
+        with open(CARDS_PATH, "r", encoding="utf-8") as f:
             tarot_data = json.load(f)
     except FileNotFoundError:
-        await message.answer("Ошибка: файл cards.json не найден в папке с ботом.")
+        await message.answer("Ошибка: файл cards.json не найден на сервере.")
+        logging.error(f"Файл не найден по пути: {CARDS_PATH}")
         return
     except Exception as e:
         await message.answer(f"Ошибка чтения файла: {e}")
@@ -343,14 +350,19 @@ async def process_tarot_ai(message: Message, state: FSMContext):
         await process_refund(message, charge_id, "Ой, духи сегодня молчат, произошла ошибка при генерации расклада.")
         return
 
-    parts = re.split(r'КАРТА \d|ВЫВОД', tarot_text, flags=re.IGNORECASE)
+    # --- НАДЕЖНЫЙ ПАРСИНГ ОТВЕТА ИИ ---
+    # Регулярка ищет маркеры и забирает текст между ними.
+    pattern = re.compile(r'(?:КАРТА\s*1|КАРТА\s*2|КАРТА\s*3|ВЫВОД)(.*?)(?=(?:КАРТА\s*[1-3]|ВЫВОД)|$)',
+                         re.IGNORECASE | re.DOTALL)
+    matches = pattern.findall(tarot_text)
 
-    if len(parts) >= 5:
-        text1 = parts[1].strip()
-        text2 = parts[2].strip()
-        text3 = parts[3].strip()
-        conclusion_text = parts[4].strip()
+    if len(matches) >= 4:
+        text1 = matches[0].strip()
+        text2 = matches[1].strip()
+        text3 = matches[2].strip()
+        conclusion_text = matches[3].strip()
     else:
+        # Если ИИ сломался и не выдал маркеры
         if re.search(r'ВЫВОД', tarot_text, re.IGNORECASE):
             split_text = re.split(r'ВЫВОД', tarot_text, flags=re.IGNORECASE)
             conclusion_text = split_text[-1].strip()
@@ -359,9 +371,10 @@ async def process_tarot_ai(message: Message, state: FSMContext):
             conclusion_text = "Карты дают общий совет, прислушайтесь к своей интуиции."
             main_body = tarot_text
 
-        clean_text = main_body.strip()
-        words = clean_text.split()
+        # Убираем остатки маркеров
+        main_body = re.sub(r'КАРТА\s*[1-3]', '', main_body, flags=re.IGNORECASE).strip()
 
+        words = main_body.split()
         if len(words) < 30:
             text1 = text2 = text3 = "Толкование скрыто духами."
         else:
@@ -369,6 +382,7 @@ async def process_tarot_ai(message: Message, state: FSMContext):
             text1 = " ".join(words[:chunk])
             text2 = " ".join(words[chunk:chunk * 2])
             text3 = " ".join(words[chunk * 2:])
+    # ------------------------------------
 
     text1 = capitalize_first_letter(text1)
     text2 = capitalize_first_letter(text2)
@@ -390,7 +404,8 @@ async def process_tarot_ai(message: Message, state: FSMContext):
             caption = caption[:1020] + "..."
 
         if image_name:
-            image_path = f"SimpleTarotPng/{image_name}"
+            # Используем правильный путь к картинкам
+            image_path = os.path.join(IMAGES_DIR, image_name)
             try:
                 photo = FSInputFile(image_path)
                 await message.answer_photo(photo=photo, caption=caption)
